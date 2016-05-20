@@ -1,25 +1,41 @@
 #!/usr/bin/env python3
 #-*- encoding: utf-8 -*-
 
-
+"""
+Exec Matrix
 
 """
 
-
-"""
+__author__ = "Alexander Weigl <weigl@kit.edu>"
+__version__= '0.2'
 
 import yaml
 import subprocess
 import logging
 import itertools
+import re
 
+
+# We are using a simple logging engine instead of `print'
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-class Environment(object):
-    """
 
+TIME_FORMAT = re.compile(r'((?P<h>[0-9]+):)?((?P<m>[0-9]+):)?(?P<s>[0-9]+)(.(?P<u>[0-9]+))?')
+"""
+Detects time format HH:MM:SS.SSS
+"""
+
+SPECIAL_LINE = re.compile(r'!!(?P<name>.+) :: (?P<value>.+)')
+"""
+Regex object, detects line of kind '!! abc :: 20'
+"""
+
+class Environment(object):
+    """An `Environment` describe a hyperspace with *N* discrete dimensions, where
+    combination of each point describes a possible execution settings for all
+    programs.
     """
 
     def __init__(self, *dimensions):
@@ -35,14 +51,9 @@ class Environment(object):
 
     def _generate_cube(self):
         rollout = list(map(list, self.dimensions))
-        self._hyperspace = itertools.product(*rollout)
-        #logger.info("Environment calculated, %d instances found" % len(self._hyperspace))
-        self._filter_cube()
-        logger.info("Environment filtered, %d instances survived" % len(self.hyperspace))
+        self.hyperspace = list(itertools.product(*rollout))
+        logger.info("Environment calculated, %d instances found" % len(self._hyperspace))
         return self.hyperspace
-
-    def _filter_cube(self):
-        self.hyperspace = list(self._hyperspace)
 
     def __iter__(self):
         def gen_iterator():
@@ -62,11 +73,16 @@ def run_with_rusage(exe, args):
        All of those used by tcsh(1) are supported.
 
        Time
+       -----
 
        %E     Elapsed real time (in [hours:]minutes:seconds).
+
        %e     (Not in tcsh(1).)  Elapsed real time (in seconds).
+
        %S     Total number of CPU-seconds that the process spent in kernel mode.
+
        %U     Total number of CPU-seconds that the process spent in user mode.
+
        %P     Percentage of the CPU that this job got, computed as (%U + %S) / %E.
 
        Memory
@@ -109,15 +125,16 @@ def run_with_rusage(exe, args):
        I/O
 
        %I     Number of filesystem inputs by the process.
+
     """
 
 
-    r = {}
+    r = {
+        'command_line': cli,
+        'args': args
+    }
 
-    r['args'] = args
     cli = "/usr/bin/time -ao run.tmp %s" % (exe)
-    r['command_line'] = cli
-
     env = {k: str(v)for k,v in args.items()}
     env['TIME'] = "{'E':TL('%E'), 'e':TL('%e'), 'S':TL(%S), 'U':TL(%U), 'P':PERCENT('%P'), 'M':%M, "+\
                   "'t':%t, 'K':%K, 'D':%D, 'p':%p, 'X':%X, 'Z':%Z, 'F':%F, 'R':%R, "+\
@@ -131,14 +148,20 @@ def run_with_rusage(exe, args):
                                shell=True)
     error = process.wait()
     r['error_code'] = error
-
     r['resouces'] = get_resources("run.tmp")
 
-    out = ""
-    err = ""
+    out, err = "", ""
 
     for line in process.stdout:
         out += "OUT=> " + str(line)
+
+        # catch lines of kind:
+        # !! entropy :: 8.2
+        matcher = SPECIAL_LINE.match(line.strip())
+        if matcher:
+            n = matcher.group('name')
+            v = matcher.group('value')
+            r[n] = v
 
     for line in process.stdout:
         err += "ERR=> " + str(err)
@@ -147,16 +170,14 @@ def run_with_rusage(exe, args):
     r['err'] = err
 
     if out: logger.info(out)
-
     if err: logger.error(err)
-
     return r
 
-import re
-TIME_FORMAT = re.compile(r'((?P<h>[0-9]+):)?((?P<m>[0-9]+):)?(?P<s>[0-9]+)(.(?P<u>[0-9]+))?')
 
 def get_resources(filename):
     def TL(s):
+        """Parse time literals from `/usr/bin/time`
+        """
         if not isinstance(s, str):
             return s
 
@@ -183,10 +204,13 @@ def get_resources(filename):
         return eval(line)
 
 class Runner(object):
+    """
+    """
     def __init__(self,
                  environment = None,
                  programs = None,
                  logging = "log/",
+                 timeout = None,
                  results ="results.yaml"):
         self.environment = environment
         self.programs = programs
